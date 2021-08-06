@@ -1,0 +1,110 @@
+---
+title: "TCCIP daily weather 1km data extraction"
+output: html_notebook
+---
+## 概述：
+針對1km的TCCIP的逐日氣候資料(最高溫、最低溫、年均溫、降雨量)，建立資料擷取函數式。
+## 前置作業
+必須先有TCCIP, 1km 的逐日氣候資料，並將四個區域中相同氣候因子的試算表放在同一資料夾內
+
+## step 0. calling the package
+```{r}
+library(data.table)
+library(plyr)
+library(parallel) #平行演算
+library(ggplot2)
+library(scales)
+library(SPEI) #Potential evapotranspiration function
+
+```
+## step 1. creating file folder 
+設立資料讀取路徑以及結果輸出路徑
+
+```{r}
+
+dir.create("1km_result/")
+```
+## Step 2. building the coordinate key
+由於資料檔案過大，無法使用原本的思維(組合所有資料後再篩選出點位)。因此改用其他方式。
+改成先用點為擷取出資料後，再組合各年度資料。由於TCCIP的資料點位座標值與5km不同，並非以0.1為單位。因此要先求算出與山峰區域最接近的座標值，再作為表格合併的key。概念是先擷取TCCIP的座標值，將山峰的座標值減去TCCIP座標值後，排除掉負值，取最小值的位置(最小正值)，最後得到換算後的座標值。取最小正值的原因是因為方格是以做最小正值為原點。
+
+```{r}
+ld_path <- "E:/Google 雲端硬碟/Climdata/TCCIP/1960_2019_1km_daily/"
+clim_factor <-c("最高溫","最低溫","平均溫","降雨量")
+s_p <- fread("GLORIA_summit.csv")
+###building the LON key and LAT key
+
+file_list <- list.files(paste0(ld_path,clim_factor[1]),pattern = clim_factor[1])
+tb <- fread(paste0(ld_path,clim_factor[1],"/",file_list[1]),sep=",")
+setnames(tb,colnames(tb[,1:(ncol(tb)-1)]),colnames(tb[,2:(ncol(tb))]))
+if(is.na(tb[1,ncol(tb),with=FALSE]))(tb[,eval(ncol(tb)):=NULL])
+LON_key <- sort(unique(tb[,LON]))
+LAT_key <- sort(unique(tb[,LAT]))
+s_p[,LON_k:=sapply(LON,function(x){
+  ind <- x-LON_key
+  ind[ind<0] <- 99
+  return(LON_key[which.min(ind)])
+})]##sapply 傳回vector
+s_p[,LAT_k:=sapply(LAT,function(x){
+  ind <- x-LAT_key
+  ind[ind<0] <- 99
+  return(LAT_key[which.min(ind)])
+  })]
+```
+## step 3. data extracting function
+建構資料擷取函數式
+
+```{R}
+tccip_extr <- function(s_p,factor){
+  file_list <- list.files(paste0(ld_path,factor),pattern = factor)
+  core <- makeCluster(8)
+  clusterExport(core,c("s_p","factor"))
+    dt_r <-parLapply(core,file_list,function(x){
+  require(data.table)
+  ld_path <- "E:/Google 雲端硬碟/Climdata/TCCIP/1960_2019_1km_daily/"
+  tb <- fread(paste0(ld_path,factor,"/",x),sep=",")
+  setnames(tb,colnames(tb[,1:(ncol(tb)-1)]),colnames(tb[,2:(ncol(tb))]))
+  if(is.na(tb[1,ncol(tb),with=FALSE]))(tb[,eval(ncol(tb)):=NULL])
+  r <- s_p[tb,on=.(LON_k=LON,LAT_k=LAT),nomatch=FALSE]
+  r[,LON_k:=NULL][,LAT_k:=NULL][,LON:=NULL][,LAT:=NULL]
+  t_r <- melt(r,id.var=c("reg","Summit"),variable.name = "date")
+  })
+  fdt <- rbindlist(dt_r)
+  stopCluster(core)
+  beepr::beep(2)
+  return(fdt)
+  }
+```
+
+## step 4. data extracting and building the time parameter
+將資料擷取出來，並建立後續分析所需之時間參數欄位
+```{r}
+clim_factor <- c("平均溫","最高溫","最低溫","降雨量")
+clim_code <- c("avg_t","max_t","min_t","rain")
+for (i in 1:4){
+  dt <- tccip_extr(s_p,clim_factor[i])
+  setnames(dt,"value",clim_code[i])
+  if(i==1){
+    result <- dt
+  }else{
+        result <- result[dt,on=.(reg=reg,Summit=Summit,date=date)]
+      }
+}
+result[,date:=as.Date(date,format="%Y%m%d")][,year:=year(date)][,month:=month(date)]
+result[month %in% 3:5,season:="spring"][
+        month %in% 6:8,season:="summer"][
+          month %in% 9:11,season:="fall"][
+            is.na(season),season:="winter"] 
+result[,year.s:=year][month==12,year.s:=year+1]
+fwrite(result,paste0(ld_path,"total/1960_2019_1km_all_summit_daily.csv"))
+
+```
+## step 4. Data calculation and graphing
+
+```{r}
+clim_y <- result[,.(avg_t=mean(avg_t),max_t=max(max_t),min_t=min(min_t),rain=sum(rain)),
+                 by=.(reg,Summit,year)]
+
+
+```
+

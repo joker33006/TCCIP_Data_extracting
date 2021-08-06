@@ -1,0 +1,212 @@
+---
+title: "TCCIP daily weather data organization and extraction"
+output: WORD
+---
+## 概述：
+將TCCIP的逐日氣候資料(最高溫、最低溫、年均溫、降雨量)整理並建立查詢函數式。
+## 前置作業
+必須先下載TCCIP的逐日氣候資料，並將四個區域中相同氣候因子的試算表放在同一資料夾內
+
+## step 0. calling the package
+```{r}
+library(data.table)
+library(plyr)
+library(parallel) #平行演算
+library(ggplot2)
+library(scales)
+library(SPEI) #Potential evapotranspiration function
+```
+
+## step 1. Data integration
+由於TCCIP原始資料將台灣區分為四個區域，因此必須先將四個區域的資料整合。
+
+1. 建立資料處理過程資料夾與結果檔案資料夾
+```{r}
+dir.create("processing")
+dir.create("result")
+```
+2. 處理資料
+
+```{r}
+clim_factor <-c("最高溫","最低溫","平均溫","降雨量")
+   section <- c("北部","中部","南部","東部")
+ld_path <- "E:/Google 雲端硬碟/Climdata/TCCIP/1960_2019_5km_daily/"
+clim_int <- function(sect,factor){
+  require(data.table)
+  path <- "E:/Google 雲端硬碟/Climdata/TCCIP/1960_2019_5km_daily/"
+    namelist <- list.files(path=paste0(path,factor),pattern = sect)
+     dataset <- lapply(namelist,function(x){
+       fread(paste0(path,factor,"/",x))
+    })
+  result <- dataset[[1]][,.(LON,LAT)] 
+    for(i in 1:length(dataset)){
+      dt <- dataset[[i]]
+      result <- result[dt,on=.(LON=LON,LAT=LAT)]
+    }
+  return(result)
+}
+var_name <- c("max_t","min_t","avg_t","rainfall")
+core <- makeCluster(10) #使用的平行演算節點數
+for (i in 1:length(clim_factor)){
+  r <- parLapply(core,section,clim_int,factor=clim_factor[i])
+  r_com <- rbindlist(r)
+  r_com <- r_com[,.SD,.SDcols=!patterns("^V")]
+  r_com[,key:=paste0(LON,LAT)]
+  r_com <- r_com[duplicated(key)==FALSE]#移除重複數據
+  r_com[,key:=NULL]
+  fwrite(r_com,paste0(ld_path,"total/",var_name[i],".csv"))
+}
+r <- NULL
+r_com <- NULL
+stopCluster(core) #結束平行演算
+beepr::beep(2)
+```
+
+## Step 2. building the extracting function 
+```{r}
+### factor: avg_t,min_t, max_t, rainfall
+### loc: the WGS 84 coordinate of each summit and used the column name "Summit", "LON", and "LAT"
+### path:the raw data folder
+TCCIP_ext <- function(factor,loc,path){
+    clim_data <- fread(paste0(path,factor,".csv"))
+    clim_data[,LON:=round_any(LON,0.05)][
+      ,LAT:=round_any(LAT,0.05)]
+    loc[,LON_key:=round_any(LON,0.05,floor)][
+      ,LAT_key:=round_any(LAT,0.05,floor)]
+    #round_any() from the plyr package
+   t2 <- loc[clim_data,on=.(LON_key=LON,LAT_key=LAT),nomatch=FALSE]
+   t2 <- t2[,-(3:6)]
+   td <- melt(t2,id.vars =c("reg","Summit"),variable.name="date")
+   td[,value:=as.numeric(value)]
+   setnames(td,"value",factor)
+   return(td)
+}
+```
+
+## step 3. 資料處理
+```{r}
+data_path <- "E:/Google 雲端硬碟/Climdata/TCCIP/1960_2019_5km_daily/total/"
+loc <- fread("GLORIA_summit.csv")
+clim_name <- list.files(data_path)
+factor <- c("avg_t","max_t","min_t","rainfall")
+
+dataset <- lapply(factor,TCCIP_ext,loc=loc,path=data_path)
+
+data_deal <- function(dt){
+  dt[,date:=as.Date(date,format="%Y%m%d")]
+  dt[,year:=year(date)][,m:=month(date)]
+  dt[,y.s:=year]
+  dt[m %in% 3:5,season:="Spring"][
+  m %in% 6:8,season:="Summer"][
+    m %in% 9:11,season:="Fall"][
+     is.na(season),season:="Winter" 
+    ]
+  dt[m==12,y.s:=year+1]
+  }
+rain <-data_deal(dataset[[4]]) 
+lim <- 10
+reg <- c("DAS","SYU","HQM","NAH","SAC")
+r_day_year <- rain[rainfall>lim,.N,by=.(reg,Summit,year)]
+for (i in reg){
+p <- ggplot(r_day_year[reg==`i`],aes(year,N,fill=Summit))+
+  geom_col()+
+  facet_grid(Summit~.)+
+  scale_x_continuous( breaks =seq(1960,2020,5))
+ggsave(paste0("result/",i,"_lim_",lim,".jpeg"),plot = p,height = 6,width = 8,dpi=600)
+}
+rain <-data_deal(dataset[[4]]) 
+lim <- 0
+reg <- c("DAS","SYU","HQM","NAH","SAC")
+season <- c("Winter","Spring","Summer","Fall")
+r_day_season <- rain[rainfall>lim,.N,by=.(reg,Summit,year,season)]
+for (i in reg){
+  for(j in season){
+  p <- ggplot(r_day_season[reg==`i`&season==`j`],
+              aes(year,N,fill=Summit))+
+  geom_col()+
+  facet_grid(Summit~.)+
+  scale_x_continuous( breaks =seq(1960,2020,5))
+  ggsave(paste0("result/",j,"/",i,"_",j,"_lim_",lim,".jpeg")
+         ,plot = p,height = 6,width = 8,dpi=600)
+  }
+}
+```
+## step 4. Potential evapotranspiration
+概述：利用桑士偉法估算潛在蒸散量
+
+```{r}
+temp <- data_deal(dataset[[1]])
+temp_mly <- temp[,.(avg_t=mean(avg_t)),
+                 by=.(reg,Summit,year,m)]
+temp_season <- temp[,.(avg_t=mean(avg_t)),by=.(reg,Summit,year,season)]
+temp_pot_eva <- temp_mly[loc,on=.(reg=reg,Summit=Summit)]
+
+temp_pot_eva <- temp_pot_eva[!is.na(avg_t)]
+for(i in loc[,Summit]){
+temp_pot_eva[Summit==`i`,p_e:=thornthwaite(avg_t,loc[Summit==`i`,LAT])]
+}
+
+rain_mly <- rain[,.(rainfall=sum(rainfall)),by=.(reg,Summit,year,m)]
+rain_mly <- rain_mly[!is.na(rainfall)]
+rain_mly[,date:=as.Date(paste0(year,"-",m,"-1"))]
+
+
+P_E <- temp_pot_eva[rain_mly,on=.(reg=reg,Summit=Summit,year=year,m=m)]
+P_E[,p_e:=as.numeric(p_e)][,w_sup:=(rainfall-p_e)]
+P_E[,date:=as.Date(paste0(year,"-",m,"-",1))]
+P_E[m %in% 3:5,season:="Spring"][
+  m %in% 6:8,season:="Summer"][
+    m %in% 9:11,season:="Fall"][
+     is.na(season),season:="Winter" 
+    ]
+his_r <- P_E[year %in% 1960:2009,.(his_r=mean(rainfall)),
+         by=.(reg,Summit,m)]
+P_E[,his_r:=NULL]
+P_E <- P_E[his_r,on=.(reg=reg,Summit=Summit,m=m)]
+P_E[,dif_r:=rainfall-his_r]
+P_E[avg_t>5,GS:="over"][is.na(GS),GS:="down"]
+fwrite(P_E,"result/1960_2019_monthly_avgt_rain_PE.csv")
+####plot
+for (i in reg){
+  p <- ggplot(P_E[reg==`i`&year %in% 2008:2020],
+              aes(date,w_sup,fill=GS))+
+  geom_col()+
+  facet_grid(Summit~.)+
+  scale_x_date( breaks =date_breaks("2 years"),date_labels = "%Y")
+  
+    ggsave(paste0("result/Water_supply/diff_with_his_r_",i,".jpeg")
+         ,plot = p,height = 6,width = 8,dpi=600)
+  }
+
+####plot by season
+for (i in reg){
+  for (j in season){
+  p <- ggplot(P_E[reg==`i`&year %in% 2005:2020&season==`j`],
+              aes(date,w_sup,fill=Summit))+
+  geom_col()+
+  facet_grid(Summit~.)+
+  scale_x_date( breaks =date_breaks("1 years"),date_labels = "%Y")+
+    labs(title=j)
+  
+    ggsave(paste0("result/Water_supply/",j,"/Water_supply_",i,"_",j,".jpeg")
+         ,plot = p,height = 6,width = 8,dpi=600)
+  }
+}
+
+
+####### plot by month
+for (i in reg){
+  p <- ggplot(P_E[reg==`i`& m==5],
+              aes(date,avg_t,fill=Summit))+
+  geom_line()+
+  facet_grid(Summit~.)+
+  scale_x_date( breaks =date_breaks("3 years"),date_labels = "%Y")+
+    labs(title=i)
+  
+    ggsave(paste0("result/temp_may_",i,".jpeg")
+         ,plot = p,height = 6,width = 8,dpi=600)
+  }
+
+```
+
+
