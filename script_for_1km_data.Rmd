@@ -104,7 +104,21 @@ fwrite(result,paste0(ld_path,"total/1960_2019_1km_all_summit_daily.csv"))
 ```{r}
 clim_y <- result[,.(avg_t=mean(avg_t),max_t=max(max_t),min_t=min(min_t),rain=sum(rain)),
                  by=.(reg,Summit,year)]
-
-
+clim_s <-  result[,.(avg_t=mean(avg_t),max_t=max(max_t),min_t=min(min_t),rain=sum(rain)),
+                 by=.(reg,Summit,season,year.s)]
+for (i in c("DAS","SYU")){
+pr <- ggplot(clim_y[reg==i],aes(x=year,y=rain))+
+  geom_col()+
+  facet_grid(Summit~reg)
+ggsave(paste0(ld_path,"/result/plot/year_",i,"_rain_.jpeg"),plot = pr,height=8,width = 10,dpi=300)
+}
+for (j in c("winter","spring","summer","fall")){
+for (i in c("DAS","SYU")){
+pr <- ggplot(clim_s[reg==i&season==j],aes(x=year.s,y=rain))+
+  geom_col()+
+  facet_grid(Summit~reg)
+ggsave(paste0(ld_path,"/result/plot/season/season_",i,"_",j,"_rain_.jpeg"),plot = pr,height=8,width = 10,dpi=300)
+}
+}
 ```
 
