@@ -15,7 +15,7 @@ library(parallel) #平行演算
 library(ggplot2)
 library(scales)
 library(SPEI) #Potential evapotranspiration function
-
+library(survminer) #theme_classIc2
 ```
 ## step 1. creating file folder 
 設立資料讀取路徑以及結果輸出路徑
@@ -120,5 +120,70 @@ pr <- ggplot(clim_s[reg==i&season==j],aes(x=year.s,y=rain))+
 ggsave(paste0(ld_path,"/result/plot/season/season_",i,"_",j,"_rain_.jpeg"),plot = pr,height=8,width = 10,dpi=300)
 }
 }
+```
+
+## step 5. Potential evapotranspiration
+概述：利用桑士偉法估算潛在蒸散量
+
+```{r}
+data_sel <- result[reg %in% c("DAS","SYU") &year.s > 1999]
+clim_m <-  data_sel[,.(avg_t=mean(avg_t),max_t=max(max_t),min_t=min(min_t),rain=sum(rain)),
+                 by=.(reg,Summit,month,year)]
+for(i in s_p[reg %in% c("DAS","SYU"),Summit]){
+clim_m[Summit==`i`,p_e:=thornthwaite(avg_t,s_p[Summit==`i`,LAT])]
+}
+clim_m[,p_e:=as.numeric(p_e)][,w_sup:=rain-p_e]
+clim_m[,date:=as.Date(paste0(year,"-",month,"-1"))]
+clim_m[avg_t>5,GS:="Above"][is.na(GS),GS:="Under"]
+clim_m[,summit_avg:=mean(w_sup),by=.(Summit)]
+for (i in c("DAS","SYU")){
+pr <- ggplot(clim_m[reg==i&year>2008],aes(x=date,y=w_sup,fill=GS))+
+  geom_col()+
+  facet_grid(Summit~reg)+
+  geom_line(aes(y=summit_avg), colour="gray1", linetype="dotted")+
+  scale_x_date( breaks =date_breaks("2 years"),date_labels = "%Y")
+ggsave(paste0(ld_path,"/result/plot/w_sup/monthly_",i,"_watersup_.jpeg"),plot = pr,height=8,width = 12,dpi=300)
+}
+```
+### step 6. 嘗試表現水分減少
+想法1，利用長期平均與正負差值來表現
+分成三個時期，2005-2009，2010-2014，2015-2019
+以第一時期的十年作為長期月平均值，計算後面兩期的平均差值或者直接表現
+```{r}
+clim_m[month %in% 3:5,season:="spring"][
+        month %in% 6:8,season:="summer"][
+          month %in% 9:11,season:="fall"][
+            is.na(season),season:="winter"] 
+clim_m[,season:=factor(season,levels = c("winter","spring","summer","fall"))]
+clim_m[,year.s:=year][month==12,year.s:=year+1]
+clim_m[year<2010,period:="P1"][
+  year %in% 2010:2014,period:="P2"][
+    year>2014,period:="P3"]
+clim_m_test <- clim_m[year>2004]
+clim_m_test[,rain_med:=median(rain),by=.(reg,Summit,month)]
+clim_m_test[,rain_med_dif:=rain-rain_med]
+clim_med_per <- clim_m_test[,.(rain_med=median(rain),wsup_med=median(w_sup)),by=.(reg,Summit,period,month,season)]
+ggplot(clim_m_test[reg=="DAS"],aes(x=date,y=rain_med_dif,fill=season))+
+  geom_col()+
+  facet_grid(Summit~season)
+ggplot(clim_med_per[reg=="DAS"],aes(x=month,y=wsup_med,fill=period))+
+  geom_col(position="dodge")+
+  facet_grid(Summit~season)  
+
+```
+
+計算長期月中位數供水量與值差
+```{r}
+clim_m_test[,wsup_med:=median(w_sup),by=.(reg,Summit,month)]
+clim_m_test[,wsup_dif:=w_sup-wsup_med]
+ggplot(clim_m_test[reg=="DAS"],aes(x=date,y=wsup_dif,fill=period))+
+  geom_col()+
+  facet_grid(Summit~.)+
+  scale_x_date( breaks =date_breaks("2 years"),date_labels = "%Y")+
+  labs(x="Year",y="Monthly anomalies of water supply (mm)",fill="Monitoring cycle",title="(a) DAS")+
+  scale_fill_discrete(labels = c("2005-2009", "2010-2014", "2015-2019"))
+ggsave("E:/Google 雲端硬碟/GLORIA_個人處理/paper_準備/SYU_DAS_water/result/plot/DAS_monthly_ws.jpeg",height=5,width = 10,dpi=300)
+fwrite(clim_m_test,file="E:/Google 雲端硬碟/GLORIA_個人處理/paper_準備/SYU_DAS_water/result/monthly_precipitation_watersup.csv")
+
 ```
 
