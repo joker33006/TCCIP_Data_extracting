@@ -1,0 +1,421 @@
+---
+title: "2021_HQM_and_NAH_data_processing"
+output: html_notebook
+---
+# 2021GLORIA期末報告氣候資料分析
+
+## step 0. package 集中與路徑指定
+```{r}
+library(data.table)
+library(ggplot2)
+library(lubridate, warn.conflicts = FALSE) #改變時區
+library(broom)
+library(patchwork)# 圖組合
+tccip_path <- "E:/Google 雲端硬碟/Climdata/TCCIP/1960_2019_1km_daily/"
+
+sv_path <- "G:/我的雲端硬碟/GLORIA_個人處理/2021/analysis_data/result/"
+```
+## step 1. 處理datalogger資料
+概述：已有完整檔案與尚未整理之檔案，將兩者資料結合
+必須注意時間設定，原始資料的時間設定可能為GTM+0
+### Step 1.1 先處理尚未整理的資料
+
+```{r}
+log_path <- "E:/Google 雲端硬碟/GLORIA_個人處理/datalogger_org_data/"
+file_n <- as.data.table(list.files(log_path))
+fwrite(file_n,paste0(sv_path,"datalogger_file_name.csv"))
+file_set_list <- fread(paste0(sv_path,"datalogger_file_name.csv"))
+Sys.setlocale("LC_TIME", "English")
+x=NULL
+file_set_list[`x`]
+#######組合資料
+org_log <- lapply(1:nrow(file_set_list),function(x){
+ file <- file_set_list[`x`]
+  name <- file[,file_name]
+  reg <- file[,region]
+  peak <-file[,summit]
+  dir_c <- file[,dir]
+  rep_c <- file[,rep]
+  log <- file[,type]
+  dt <- fread(paste0(log_path,name))
+   if (log=="hobo_1"){
+      colnames(dt)[1:3] <- c("code","date","temp")
+   dt[,time_st:=as.POSIXct(date,format="%m/%d/%y %I:%M:%S %p",tz ="GMT")]
+   }else if(log=="hobo_2"){
+      colnames(dt)[1:2] <- c("date","temp")
+   dt[,time_st:=as.POSIXct(date,format="%Y/%m/%d %I:%M:%S %p",tz ="Asia/Taipei")]
+   }else if(log=="mlog5"){
+      dt[-1]
+     colnames(dt)[1:3] <- c("code","date","temp")
+    dt[,time_st:=as.POSIXct(date,format="%d.%m.%Y %H:%M:%S",tz ="GMT")]
+     
+    }
+      c_dt <- data.table(code=c(1:nrow(dt)), region=reg,
+                         summit=peak,
+                         dir=dir_c,
+                         rep=rep_c,
+                         log_type=log,
+                         dt[,.(date,temp,time_st)])
+ return(c_dt)
+})
+```
+### step 1,2 處理已統合的資料
+```{r}
+log_anomal <- lapply(1:length(org_log),function(x){
+  dt <- org_log[[x]]
+  temp_avg <- mean(dt[code %in% c(240:(nrow(dt)-480)),temp])
+  temp_sd <- sd(dt[code %in% c(240:(nrow(dt)-480)),temp])
+  dt[temp>(temp_avg+1.5*temp_sd),mark:="anormal"]
+  dt[is.na(mark),mark:="normal"]
+  dt[,date:=as.character(date)]
+  dt
+  return(dt)
+  })
+log_data <- rbindlist(log_anomal)
+log_data[,data_sour:="New"]
+log_data[,yyddhh:=with_tz(time_st,tz="Asia/Taipei")]
+```
+
+### step 1.3 載入已統合的氣候資料，並整理成篩選前的形式
+```{r}
+w_data <- fread("E:/Google 雲端硬碟/GLORIA_個人處理/Weather_data/temp_20200809_corrected_add_date.csv")
+colnames(logger_data)
+Sys.setlocale("LC_TIME", "English") #Set up the time format to English.
+w_data[,yyddhh:=as.POSIXct(timestamp,format="%Y-%m-%d %H:%M:%S",tz ="Asia/Taipei")+8*60*60]
+w_data_r <- w_data[region %in% c("NAH","HQM"),
+                   .(region,summit,direction,temperature,datalogger,yyddhh)]
+w_data_r[,data_sour:="Old"]
+setnames(w_data_r,c("temperature","datalogger","direction"),c("temp","log_type","dir"))
+c_dt <- rbind(w_data_r,log_data,fill=TRUE)
+c_dt[summit=="SMA",summit:="SMZ"]
+c_dt[,year:=year(yyddhh)][,month:=month(yyddhh)][,day:=day(yyddhh)]
+c_dt <- c_dt[year>2008]
+for(i in unique(c_dt[,summit])){
+ggplot(c_dt[summit==`i`],aes(x=yyddhh,y=temp,color=log_type))+
+  geom_line()+
+  facet_grid(dir~.)
+ggsave(paste0(sv_path,"/plot/temp_test/",i,".jpeg"))
+}
+```
+### step 1.4 處理異常值
+以日均溫計算並挑出異常高溫日
+
+```{r}
+c_dt[,date:=floor_date(yyddhh,"day")]
+
+
+d_dt <- c_dt[!is.na(temp),.(t_avg=mean(temp),t_max=max(temp),t_min=min(temp),.N),
+             by=.(region,summit,dir,log_type,date)]
+#################移除問題資料
+d_dt <- d_dt[!(summit=="QSS"&
+                dir=="E"&
+                log_type=="mlog5w"&
+                (date %in% c(as.Date("2016-07-12"):as.Date("2017-01-19"))))]
+
+####################
+d_dt_avg <- d_dt[,.(t_avg_m=mean(t_avg),t_avg_sd=sd(t_avg),
+                   t_max_m=mean(t_max),t_max_sd=sd(t_max)),
+                 by=.(region,summit,dir)]
+
+d_dt <- d_dt[d_dt_avg,on=.(region=region,summit=summit,dir=dir)]
+d_dt[,mark:=NULL]
+ d_dt[t_avg>(t_max_m+t_avg_sd),mark:="anormal"]
+d_dt[is.na(mark),mark:="normal"]
+write.csv(d_dt,paste0(sv_path,"/daily_data_check.csv"))###進入手動處理
+################讀入手動處理完資料
+d_dt <- fread(paste0(sv_path,"/daily_data_check_finish.csv"))
+d_dt[,date:=as.Date(date)]
+d_dt <- d_dt[!(N<24)]
+for(i in unique(d_dt[,summit])){
+ggplot(d_dt[summit==`i`],aes(x=date,y=t_avg,color=log_type))+
+  geom_line()+
+  facet_grid(dir~.)
+ggsave(paste0(sv_path,"/plot/temp_test/Daily",i,".jpeg"))
+}
+```
+## Step 2. 整合TCCIP資料
+自前一個section繼承資料：
+d_dt:整理後的日均溫資料
+### step 2.1. 前置資料處理
+```{r}
+####處理dt
+d_dt <- fread(paste0(sv_path,"/daily_data_check_finish.csv"))
+d_dt[,date:=as.Date(date)]
+d_dt <- d_dt[!(N<24)]
+fwrite(d_dt,paste0(sv_path,"/daily_datalogger_data_input.csv"))
+head(d_dt)
+d_mix <- d_dt[,.(t_avg=mean(t_avg),t_max=max(t_max),t_min=min(t_min)),
+              by=.(region,summit,dir,date)]
+
+########
+########### 處理tccip data
+tccip_data <- fread("E:/Google 雲端硬碟/Climdata/TCCIP/1960_2019_1km_daily/total/1960_2019_1km_all_summit_daily.csv")
+tccip_reg <- tccip_data[(reg %in% c("HQM","NAH"))&(year %in% 2009:2019) ]
+tccip_reg[,date:=as.Date(date)]
+#####
+dt_c <- d_mix[tccip_reg,on=.(region=reg,summit=Summit,date=date)]
+fwrite(dt_c,paste0(sv_path,"/daily_average_temp_data_mix_all_datalog.csv"))
+```
+
+### step 2.2. 回歸分析
+利用TCCIP資料填補Datalogger資料空缺
+首先，依照不同方位資料做回歸建模，再用預測值與數值合併
+使用資料:
+dt_c:來自datalogger資料(t_avg,t_min,t_max)，來自tccip資料(avg_t, min_t, max_t)
+tccip_reg:來自tccip的資料，並已篩選地點與時間
+
+```{r}
+
+####wdata is the weather data from the combination of datalogger and ERA5
+#### era5_d is the daily data from ERA5
+### S is the summit code vector 
+dt_c <- fread(paste0(sv_path,"/daily_average_temp_data_mix_all_datalog.csv"))
+dt_c[,date:=as.Date(date)]
+lm_era_real <- function(wdata,era5_d,S){ 
+  m_fr <- NULL
+  w_result <- NULL
+  for (i in S){
+    rd <- wdata[summit==`i`]
+    dir_c <- c("N","E","S","W")
+    for (j in dir_c){
+        r2 <- rd[dir==`j`,]
+        m_avg <- lm(t_avg~avg_t,data=r2)
+        m_max <- lm(t_max~max_t,data=r2)
+        m_min <- lm(t_min~min_t,data=r2)
+        ######save the model coefficient
+        m_avg_r <-cbind(data.table(model="avg_t",
+                                 summit=i,direction=j),
+                      glance(m_avg)[1:6])
+        m_max_r <-cbind(data.table(model="max_t",
+                                 summit=i,direction=j),
+                      glance(m_max)[1:6])
+        m_min_r <-cbind(data.table(model="min_t",
+                                 summit=i,direction=j),
+                      glance(m_min)[1:6])
+        #glance from the package "broom"
+        m_r <- rbind(m_avg_r,m_max_r,m_min_r)
+        m_fr <- rbind(m_fr,m_r)
+        ################ merge the rdata and predict
+        pre <- era5_d[Summit==`i`]
+        pre[,t_avg_p:=predict(m_avg,pre)][
+          ,t_max_p:=predict(m_max,pre)][
+            ,t_min_p:=predict(m_max,pre)][
+              ,dir:=j]
+        t_pre <- r2[,1:7][pre,on=.(date=date,region=reg,summit=Summit,dir=dir)]
+        
+    t_pre[is.na(t_avg),c('t_avg',"t_max","t_min",'type'):=.(t_avg_p,t_max_p,t_min_p,"p")] #the 'p' mean the temp. was a predict value. 
+    t_pre[is.na(type),type:="r"] # the 'r' mean the temp. was a real temp.. 
+    w_result <- rbind(w_result,t_pre)
+    }#finished j loop
+  } #i loop
+return(list(m_fr,w_result))
+}
+S <- c('QNS','QSS','SMN','ZNF','SMZ','LIN')
+
+result <- lm_era_real(dt_c,tccip_reg,S)
+write.csv(result[2],paste0(sv_path,'/temp_combin_daily.csv'))
+write.csv(result[1],paste0(sv_path,'/temp_model_coefficent.csv'))
+```
+# step 3. 合併與資料處理
+概述：將計算完的資料與2020年的資料合併，再計算單一山峰的均溫。
+所需資料:temp_combin_daily.csv
+d_mix:將所有datalogger資料統計為各山頭各方位的日均溫
+```{r}
+bs_data <- fread(paste0(sv_path,'/temp_combin_daily.csv'))#在excel手動將資料分組
+
+bs_data[,date:=as.Date(date)]
+c_bdt <- rbind(bs_data,d_mix[date>as.Date("2019-12-31")],fill=TRUE)
+c_bdt[,c("avg_t","max_t","min_t"):=.(NULL,NULL,NULL)]
+c_bdt[is.na(type),type:="r"]
+c_bdt[is.na(group),group:=max(group)+1]
+
+c_bdt[,c("month","year","year.s"):=.(month(date),year(date),year(date))]
+c_bdt[month==12,year.s:=year+1]
+c_bdt[month %in% 3:5,season:="spring"][
+  month %in% 6:8,season:="summer"][
+    month %in% 9:11,season:="fall"][
+      is.na(season),season:="winter"
+    ]
+write.csv(c_bdt,paste0(sv_path,"/temp_analysis_base_DT.csv"))
+for(i in unique(c_bdt[,summit])){
+ggplot(c_bdt[summit==`i`],aes(x=date,y=t_avg,color=type,group=group))+
+  geom_line()+
+  facet_grid(dir~.)+
+  labs(x="Date",y="Daily temperautre average (°C)")
+ggsave(paste0(sv_path,"/plot/temp_test/Daily_total_temp_",i,".jpeg"),height = 4,width=9,dpi=600)
+}
+
+```
+
+# step 4. 分析與作圖
+## step 4.1 缺值比例計算
+概述：計算資料缺值比例
+以各山峰區域埋入datalogger的隔年1月1日至2020年12月31日為止的天數為基準，
+統計各山峰有多少個p屬性(預測值)的溫度
+
+```{r}
+dt<- fread(paste0(sv_path,"/temp_analysis_base_DT.csv"))
+dt[,date:=as.Date(date)]
+dt_count_day <- dt[type=="p"&date<as.Date("2021-01-01"),.N,by=.(region,summit,dir,type)]
+dt_count_day[region=="HQM",total.day:=(as.Date("2020-12-31")-as.Date("2009-12-31"))][
+  region=="NAH",total.day:=(as.Date("2020-12-31")-as.Date("2010-12-31"))
+]
+dt_count_day[,total.day:=as.numeric(total.day)][,per:=N/total.day*100]
+fwrite(dt_count_day,paste0(sv_path,"/r_temp_proportion.csv"))
+
+```
+## step 4.2 年均溫與年雨量
+概述：計算年均溫與年雨量並作圖
+```{r}
+dt_y <- dt[year %in% 2010:2019,
+           .(t_avg=mean(t_avg),t_max=max(t_max),t_min=min(t_min),rain=sum(rain)/4),
+           by=.(region,summit,year)]
+dt_s<- dt[year.s %in% 2010:2019,
+           .(t_avg=mean(t_avg),t_max=max(t_max),t_min=min(t_min),rain=sum(rain)/4),
+           by=.(region,summit,year.s,season)] 
+m_fr <- NULL
+for( j in c("t_avg","t_max","t_min","rain")){
+    for (i in c("QNS","QSS","SMN","ZNF","SMZ","LIN")){
+    m <- lm(get(j)~year,data=dt_y[summit==`i`])
+    m_r <- data.table(model=j, summit=i,m$coefficients[2], glance(m)[1:6])
+    m_fr <- rbind(m_fr,m_r)
+  }
+}
+write.csv(m_fr,paste0(sv_path,"/lm_r_for_yearly_climate.csv"))
+
+HQM <- ggplot(dt_y[region=="HQM"],aes(x=year,y=t_avg,color=summit))+
+  geom_point()+
+  geom_smooth(method = lm)+
+  labs(x='Year',y='Mean annual temperature (°C)',title="(a) HQM")+
+  theme_classic()+
+  scale_x_continuous(breaks = seq(2010,2019,2))
+NAH <- ggplot(dt_y[region=="NAH"],aes(x=year,y=t_avg,color=summit))+
+  geom_point()+
+  geom_smooth(method = lm)+
+  labs(x='Year',y='Mean annual temperature (°C)',title="(b) NAH")+
+  theme_classic()+
+  scale_x_continuous(breaks = seq(2010,2019,2))+
+  scale_color_brewer(palette="Dark2")
+HQM+NAH+ plot_layout(guides = "collect")
+
+ggsave(paste0(sv_path,"/plot/_avg_year.jpeg"),width = 9,height=4,dpi=300)
+
+HQM <- ggplot(dt_y[region=="HQM"],aes(x=year,y=t_max,color=summit))+
+  geom_point()+
+  geom_smooth(method = lm)+
+  labs(x='Year',y='Annual maximum temperature (°C)',title="(a) HQM")+
+  theme_classic()+
+  scale_x_continuous(breaks = seq(2010,2019,2))
+NAH <- ggplot(dt_y[region=="NAH"],aes(x=year,y=t_max,color=summit))+
+  geom_point()+
+  geom_smooth(method = lm)+
+  labs(x='Year',y='Annual maximum temperature (°C)',title="(b) NAH")+
+  theme_classic()+
+  scale_x_continuous(breaks = seq(2010,2019,2))+
+  scale_color_brewer(palette="Dark2")
+HQM+NAH+ plot_layout(guides = "collect")
+
+ggsave(paste0(sv_path,"/plot/t_max_year.jpeg"),width = 9,height=4,dpi=300)
+### 年降雨量繪圖
+dt_y[,y_pre_a:=mean(rain),by=.(summit)]
+HQM <- ggplot(dt_y[region=="HQM"],aes(x=year,y=rain,fill=summit,alpha=0.8))+
+  geom_col()+
+  geom_hline(aes(yintercept=y_pre_a), colour="#BB0000", linetype="dashed")+ 
+  labs(x='Year',y='Annual precipitation (mm)',title="(a) HQM")+
+  theme_classic()+
+  facet_grid(~summit)+
+  scale_x_continuous(breaks = seq(2010,2019,2))
+NAH <- ggplot(dt_y[region=="NAH"],aes(x=year,y=rain,fill=summit,alpha=0.8))+
+  geom_col()+
+  geom_hline(aes(yintercept=y_pre_a), colour="#BB0000", linetype="dashed")+ 
+  labs(x='Year',y='Annual precipitation (mm)',title="(b) NAH")+
+  theme_classic()+
+  facet_grid(~summit)+
+  scale_x_continuous(breaks = seq(2010,2019,2))+
+  scale_fill_brewer(palette="Dark2")
+HQM/NAH+ plot_layout(guides = "collect")
+ggsave(paste0(sv_path,"/plot/pre_avg_year.jpeg"),width = 9,height=6,dpi=300)
+```
+### Step 4.3 極端氣候天數計算
+利用Tccip的日均溫資料做計算
+```{r}
+tccip_data <- fread("E:/Google 雲端硬碟/Climdata/TCCIP/1960_2019_1km_daily/total/1960_2019_1km_all_summit_daily.csv")
+tccip_reg <- tccip_data[(reg %in% c("HQM","NAH"))&year>1995]
+tccip_reg[,date:=as.Date(date)]
+tccip_reg[,t_avg_ext_h:=mean(avg_t)+2*sd(avg_t),by=.(Summit)][
+  ,t_avg_ext_l:=mean(avg_t)-2*sd(avg_t),by=.(Summit)
+]
+tccip_reg[avg_t>t_avg_ext_h,ext_h_d:=1][avg_t<t_avg_ext_l,ext_l_d:=1]
+
+ext_y <- tccip_reg[,.(ext_h=sum(ext_h_d,na.rm = TRUE),ext_l=sum(ext_l_d,na.rm = TRUE)),by=.(reg,Summit,year)]
+ext_h <- ggplot(ext_y,aes(x=year,color=Summit))+
+  geom_line(aes(y=ext_h))+
+  labs(x="Year",y="Relative high temperature days",title = "(a)")+
+  theme_bw()
+
+ext_l <- ggplot(ext_y,aes(x=year,color=Summit))+
+  geom_line(aes(y=ext_l))+
+  labs(x="Year",y="Relative low temperature days",title = "(b)")+
+  theme_bw()
+ext_h+ext_l+ plot_layout(guides = "collect")
+ggsave(paste0(sv_path,"/plot/r_high_temp_day.jpeg"),height = 4,width = 9)
+```
+### step 4.4 季節變化
+```{r}
+dt_s
+s_m_fr <- NULL
+for( j in c("t_avg","t_max","t_min","rain")){
+    for(k in c("winter","spring","summer","fall")){
+      for (i in c("QNS","QSS","SMN","ZNF","SMZ","LIN")){
+      m <- lm(get(j)~year.s,data=dt_s[summit==`i`&season==`k`])
+      m_r <- data.table(model=j, season=k,summit=i,m$coefficients[2], glance(m)[1:6])
+      s_m_fr <- rbind(s_m_fr,m_r)
+    }
+    }
+  }
+write.csv(s_m_fr,paste0(sv_path,"/lm_r_for_seasonally_climate.csv"))
+
+HQM <- ggplot(dt_s[region=="HQM"&season=="winter"],aes(x=year.s,y=t_avg,color=summit))+
+  geom_point()+
+  geom_smooth(method = lm)+
+  labs(x='Year',y='Mean winter temperature (°C)',title="(a) HQM")+
+  theme_classic()+
+  scale_x_continuous(breaks = seq(2010,2019,2))
+NAH <- ggplot(dt_s[region=="NAH"&season=="winter"],aes(x=year.s,y=t_avg,color=summit))+
+  geom_point()+
+  geom_smooth(method = lm)+
+  labs(x='Year',y='Mean winter temperature (°C)',title="(b) NAH")+
+  theme_classic()+
+  scale_x_continuous(breaks = seq(2010,2019,2))+
+  scale_color_brewer(palette="Dark2")
+HQM+NAH+ plot_layout(guides = "collect")
+
+ggsave(paste0(sv_path,"/plot/winter_avg_year.jpeg"),width = 10,height=4,dpi=300)
+
+
+
+### 季節降雨量繪圖
+dt_s[,s_pre_a:=mean(rain),by=.(summit,season)]
+dt_s[,season:=factor(season,levels=c("winter","spring","summer","fall"))]
+ggplot(dt_s[region=="HQM"],aes(x=year.s,y=rain,fill=summit,alpha=0.8))+
+  geom_col(width = 0.5)+
+  geom_hline(aes(yintercept=s_pre_a), colour="#BB0000", linetype="dashed")+ 
+  labs(x='Year',y='Seasonal precipitation (mm)')+
+  theme_classic()+
+  facet_grid(season~summit)+
+  scale_x_continuous(breaks = seq(2010,2019,2))
+ggsave(paste0(sv_path,"/plot/pre_seasonal_HQM.jpeg"),width = 9,height=12,dpi=300)
+
+ggplot(dt_s[region=="NAH"],aes(x=year.s,y=rain,fill=summit,alpha=0.8))+
+  geom_col(width = 0.5)+
+  geom_hline(aes(yintercept=s_pre_a), colour="#BB0000", linetype="dashed")+ 
+  labs(x='Year',y='Seasonal precipitation (mm)')+
+  theme_classic()+
+  facet_grid(season~summit)+
+  scale_x_continuous(breaks = seq(2010,2019,2))+
+  scale_fill_brewer(palette="Dark2")
+ggsave(paste0(sv_path,"/plot/pre_seasonal_NAH.jpeg"),width = 9,height=12,dpi=300)
+dt_s[year.s==2018&season=="spring",.(mean(rain),mean(s_pre_a)),by=.(region)]
+```
+
+
