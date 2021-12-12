@@ -17,7 +17,7 @@ library(scales)
 library(agricolae) # for HSD.test
 library(SPEI) #Potential evapotranspiration function
 library(survminer) #theme_classIc2
-library(broom) #extract the result of lm
+library(broom) #extract the result of lm and t-test result
 library(ggpmisc) #add lm formula in ggplot
 library(patchwork) #Arranging plots
 
@@ -132,10 +132,12 @@ ggsave(paste0(sv_path,"/result/plot/season/season_",i,"_",j,"_rain_.jpeg"),plot 
 概述：利用桑士偉法估算潛在蒸散量
 
 ```{r}
+result <- fread("E:/climdata/TCCIP/1960_2019_1km_daily/total/1960_2019_1km_all_summit_daily.csv")
+
 data_sel <- result[reg %in% c("DAS","SYU") &year.s > 1999]
 clim_m <-  data_sel[,.(avg_t=mean(avg_t),max_t=max(max_t),min_t=min(min_t),rain=sum(rain)),
                  by=.(reg,Summit,month,year)]
-for(i in s_p[reg %in% c("DAS","SYU"),Summit]){
+for(i in c("SEN","YAT","SUN","TSW","DSH","JNJ")){
 clim_m[Summit==`i`,p_e:=thornthwaite(avg_t,s_p[Summit==`i`,LAT])]
 }
 clim_m[,p_e:=as.numeric(p_e)][,w_sup:=rain-p_e]
@@ -148,7 +150,7 @@ pr <- ggplot(clim_m[reg==i&year>2008],aes(x=date,y=w_sup,fill=GS))+
   facet_grid(Summit~reg)+
   geom_line(aes(y=summit_avg), colour="gray1", linetype="dotted")+
   scale_x_date( breaks =date_breaks("2 years"),date_labels = "%Y")
-ggsave(paste0(ld_path,"/result/plot/w_sup/monthly_",i,"_watersup_.jpeg"),plot = pr,height=8,width = 12,dpi=300)
+ggsave(paste0(sv_path,"result/plot/monthly_",i,"_watersup_.jpeg"),plot = pr,height=8,width = 12,dpi=300)
 }
 ```
 ### step 6. 嘗試表現水分減少
@@ -191,9 +193,25 @@ clim_m_test[,wsup_med:=median(w_sup),by=.(reg,Summit,month)]
 clim_m_test[,wsup_dif:=w_sup-wsup_med]
 region <- c("DAS","SYU")
 clim_m_test[,Summit:=factor(Summit,levels =c("SEN","YAT","SUN","TSW","DSH","JNJ"))]
-  summit_clim_avg <- clim_y[,.(avg_t=mean(avg_t),avg_p=mean(rain)),by=.(Summit)]
-fwrite(clim_m_test,file="G:/我的雲端硬碟/GLORIA_個人處理/paper_準備/SYU_DAS_water/result/monthly_precipitation_watersup.csv")
-fwrite(summit_clim_avg,file="G:/我的雲端硬碟/GLORIA_個人處理/paper_準備/SYU_DAS_water/result/Summit_avg_T_rain.csv")
+summit_clim_avg <- clim_y[,.(avg_t=mean(avg_t),avg_p=mean(rain)),by=.(Summit)]
+####### pair t-test for above and below median months
+clim_m_test[wsup_dif>0,sym:="ab"][wsup_dif<0,sym:="bl"][wsup_dif==0,sym:="eq"]
+wsup_m_cout <- clim_m_test[,.(months=.N),by=.(Summit,period,sym)]
+wsup_m_cout <- dcast(wsup_m_cout, Summit ~ period+sym,value.var = c("months"))
+colnames(wsup_m_cout)
+
+t_result <- with(wsup_m_cout,{
+tidy(t.test(P1_ab,P1_bl,paired=TRUE)) ###tidy function from the broom
+})
+t_result <- rbind(t_result, with(wsup_m_cout,{
+                tidy(t.test(P2_ab,P2_bl,paired=TRUE))})) 
+t_result <- rbind(t_result, with(wsup_m_cout,{
+                tidy(t.test(P3_ab,P3_bl,paired=TRUE))})) 
+fwrite(t_result,file=paste0(sv_path,"result/ws_dif_pt_test_result.csv"))
+fwrite(wsup_m_cout,file=paste0(sv_path,"result/ws_med_above_below_result.csv"))
+########finish
+fwrite(clim_m_test,paste0(sv_path,"result/monthly_precipitation_watersup.csv"))
+fwrite(summit_clim_avg,paste0(sv_path,"result/Summit_avg_T_rain.csv"))
 ######plot the monthly anomalies of water supply  
 ggplot(clim_m_test,aes(x=date,y=wsup_dif,fill=period))+
   geom_col()+
@@ -269,9 +287,11 @@ p <- ggplot(pe_y[reg==`i`],aes(x=year,y=p_e))+
   facet_grid(~Summit)+
   scale_y_continuous(limits=c(200,700))+
   theme_classic2()+
-  stat_poly_eq(formula = y ~ x,aes(label = paste(..eq.label..,..rr.label..,
+  stat_poly_eq(formula = y ~ x,aes(label = paste(..eq.label..)),
+               label.x.npc = "left",label.y.npc = 0.97,parse=TRUE,size = 4)+
+  stat_poly_eq(formula = y ~ x,aes(label = paste(..rr.label..,
                                                  ..p.value.label..,sep = "~~~~")),
-               label.x.npc = "right",parse=TRUE,size = 3)+
+               label.x.npc = "left",label.y.npc = 0.85,parse=TRUE,size = 3)+
   labs(x="Year",y="PE (mm)")
 assign(paste0("pe_",i),p)
 }
@@ -279,7 +299,7 @@ assign(paste0("pe_",i),p)
 pe_DAS+pe_SYU+ plot_layout(ncol = 1)+
   plot_annotation(tag_levels = 'a')
 
-ggsave(paste0(sv_path,"result/plot/annual_p_e.jpeg"),height=8,width = 10,dpi=300)
+ggsave(paste0(sv_path,"result/plot/annual_p_e.jpeg"),height=6,width = 8,dpi=600)
 ##### water supply
 pe_y[,ws_med:=median(w_s),by=Summit]
 pe_y[year %in% 2005:2009,MC:="MC1"][
