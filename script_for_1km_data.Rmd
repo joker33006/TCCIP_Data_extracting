@@ -214,28 +214,25 @@ fwrite(clim_m_test,paste0(sv_path,"result/monthly_precipitation_watersup.csv"))
 fwrite(summit_clim_avg,paste0(sv_path,"result/Summit_avg_T_rain.csv"))
 ######plot the monthly anomalies of water supply  
 ggplot(clim_m_test,aes(x=date,y=wsup_dif,fill=period))+
-  geom_col()+
+  geom_col(alpha=0.8)+
   facet_grid(Summit~.)+
   scale_x_date( breaks =date_breaks("2 years"),date_labels = "%Y")+
-  labs(x="Year",y="Monthly anomalies of water supply (mm)",fill="Monitoring cycle")+
-  scale_fill_discrete(labels = c("2005-2009", "2010-2014", "2015-2019"))+
-  #theme_classic()+
-  scale_fill_brewer(palette="Dark2")
+  labs(x="Year",y="Anomalies of monthly water supply (mm)")+
+  scale_fill_brewer(palette="Dark2",labels = c("2005-2009", "2010-2014", "2015-2019")
+                      ,name="Monitoring cycle")
 
-
-
-ggsave(paste0(sv_path,"result/plot/DAS_SYU_monthly_ws_anomal.jpeg"),height=9,width = 8,dpi=600)
+ggsave(paste0(sv_path,"result/plot/figure/Figure 2.DAS_SYU_monthly_ws_anomal.jpeg"),height=10,width = 9,dpi=600)
 
 ######plot the water supply (mm) 
 ggplot(clim_m_test,aes(x=date,y=w_sup,fill=period))+
   geom_col()+
   facet_grid(Summit~.)+
   scale_x_date( breaks =date_breaks("2 years"),date_labels = "%Y")+
-  labs(x="Year",y="Monthly water supply (mm)",fill="Monitoring cycle")+
-  scale_fill_discrete(labels = c("2005-2009", "2010-2014", "2015-2019"))+
-  #theme_classic()+
-  scale_fill_brewer(palette="Dark2")
-ggsave(paste0(sv_path,"result/plot/DAS_SYU_monthly_ws.jpeg"),height=9,width = 8,dpi=600)
+  scale_fill_brewer(palette="Dark2",labels = c("2005-2009", "2010-2014", "2015-2019"),
+                      name="Monitoring cycle")+
+  labs(x="Year",y="Monthly water supply (mm)")
+  
+ggsave(paste0(sv_path,"result/plot/DAS_SYU_monthly_ws.jpeg"),height=10,width = 9,dpi=600)
 
 ########################
 ggboxplot(clim_m_test,aes(x=date,y=wsup_dif,fill=period))+
