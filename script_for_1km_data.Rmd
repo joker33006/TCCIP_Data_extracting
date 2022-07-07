@@ -34,13 +34,12 @@ dir.create("1km_result/")
 改成先用點為擷取出資料後，再組合各年度資料。由於TCCIP的資料點位座標值與5km不同，並非以0.1為單位。因此要先求算出與山峰區域最接近的座標值，再作為表格合併的key。概念是先擷取TCCIP的座標值，將山峰的座標值減去TCCIP座標值後，排除掉負值，取最小值的位置(最小正值)，最後得到換算後的座標值。取最小正值的原因是因為方格是以做最小正值為原點。
 
 ```{r}
-ld_path <- "E:/Google 雲端硬碟/Climdata/TCCIP/1960_2019_1km_daily/"
-sv_path <- "G:/我的雲端硬碟/GLORIA_個人處理/paper_準備/SYU_DAS_water/"
+ld_path <- "E:/climdata/TCCIP/1960_2019_1km_daily/"
+sv_path <- "E:/climdata/TCCIP/1960_2019_1km_daily/result/"
 clim_factor <-c("最高溫","最低溫","平均溫","降雨量")
-s_p <- fread("GLORIA_summit.csv")
+s_p <- fread("cirque.csv")
 ###building the LON key and LAT key
-
-file_list <- list.files(paste0(ld_path,clim_factor[1]),pattern = clim_factor[1])
+file_list <- list.files(paste0(ld_path,clim_factor[1]),pattern = ".csv")
 tb <- fread(paste0(ld_path,clim_factor[1],"/",file_list[1]),sep=",")
 setnames(tb,colnames(tb[,1:(ncol(tb)-1)]),colnames(tb[,2:(ncol(tb))]))
 if(is.na(tb[1,ncol(tb),with=FALSE]))(tb[,eval(ncol(tb)):=NULL])
@@ -62,12 +61,12 @@ s_p[,LAT_k:=sapply(LAT,function(x){
 
 ```{R}
 tccip_extr <- function(s_p,factor){
-  file_list <- list.files(paste0(ld_path,factor),pattern = factor)
+  ld_path <- "E:/climdata/TCCIP/1960_2019_1km_daily/"
+  file_list <- list.files(paste0(ld_path,factor),pattern = ".csv")
   core <- makeCluster(8)
   clusterExport(core,c("s_p","factor"))
     dt_r <-parLapply(core,file_list,function(x){
   require(data.table)
-  ld_path <- "E:/Google 雲端硬碟/Climdata/TCCIP/1960_2019_1km_daily/"
   tb <- fread(paste0(ld_path,factor,"/",x),sep=",")
   setnames(tb,colnames(tb[,1:(ncol(tb)-1)]),colnames(tb[,2:(ncol(tb))]))
   if(is.na(tb[1,ncol(tb),with=FALSE]))(tb[,eval(ncol(tb)):=NULL])
@@ -77,7 +76,7 @@ tccip_extr <- function(s_p,factor){
   })
   fdt <- rbindlist(dt_r)
   stopCluster(core)
-  beepr::beep(2)
+  
   return(fdt)
   }
 ```
@@ -95,15 +94,18 @@ for (i in 1:4){
   }else{
         result <- result[dt,on=.(reg=reg,Summit=Summit,date=date)]
       }
-}
+beepr::beep(10)
+  }
 result[,date:=as.Date(date,format="%Y%m%d")][,year:=year(date)][,month:=month(date)]
 result[month %in% 3:5,season:="spring"][
         month %in% 6:8,season:="summer"][
           month %in% 9:11,season:="fall"][
             is.na(season),season:="winter"] 
 result[,year.s:=year][month==12,year.s:=year+1]
-fwrite(result,paste0(ld_path,"total/1960_2019_1km_all_summit_daily.csv"))
 
+result <- result[year>1994]
+fwrite(result,paste0(sv_path,"1995_2019_1km_all_plot_daily_for_亞頎.csv"))
+warnings()
 ```
 ## step 4. Data calculation and graphing
 
@@ -137,6 +139,8 @@ result <- fread("E:/climdata/TCCIP/1960_2019_1km_daily/total/1960_2019_1km_all_s
 data_sel <- result[reg %in% c("DAS","SYU") &year.s > 1999]
 clim_m <-  data_sel[,.(avg_t=mean(avg_t),max_t=max(max_t),min_t=min(min_t),rain=sum(rain)),
                  by=.(reg,Summit,month,year)]
+
+
 for(i in c("SEN","YAT","SUN","TSW","DSH","JNJ")){
 clim_m[Summit==`i`,p_e:=thornthwaite(avg_t,s_p[Summit==`i`,LAT])]
 }
@@ -197,9 +201,23 @@ summit_clim_avg <- clim_y[,.(avg_t=mean(avg_t),avg_p=mean(rain)),by=.(Summit)]
 ####### pair t-test for above and below median months
 clim_m_test[wsup_dif>0,sym:="ab"][wsup_dif<0,sym:="bl"][wsup_dif==0,sym:="eq"]
 wsup_m_cout <- clim_m_test[,.(months=.N),by=.(Summit,period,sym)]
-wsup_m_cout <- dcast(wsup_m_cout, Summit ~ period+sym,value.var = c("months"))
+
+wsup_m_cout <- dcast(wsup_m_cout, Summit~period+sym,value.var = c("months"))
 colnames(wsup_m_cout)
 
+######wilcox.test of wsup_m_cout
+wilcox.test(wsup_m_cout$P3_ab,wsup_m_cout$P3_bl, paired = TRUE,alternative = "less")
+w_r <-data.table(period="P1",with(wsup_m_cout,{
+  tidy(wilcox.test(P1_ab,P1_bl, paired = TRUE, alternative = "great"))
+  }))
+w_r <- rbind(w_r, data.table(period="P2",with(wsup_m_cout,{
+              tidy(wilcox.test(P2_ab,P2_bl, paired = TRUE, alternative = "great"))
+  }))) 
+w_r <- rbind(w_r, data.table(period="P3",with(wsup_m_cout,{
+              tidy(wilcox.test(P3_ab,P3_bl, paired = TRUE, alternative = "less"))
+  }))) 
+fwrite(w_r,file="H:/我的雲端硬碟/研究室計畫/GLORIA_個人處理/paper_準備/SYU_DAS_water/result/ws_dif_wilcox.test_result.csv")
+######
 t_result <- with(wsup_m_cout,{
 tidy(t.test(P1_ab,P1_bl,paired=TRUE)) ###tidy function from the broom
 })
@@ -209,6 +227,7 @@ t_result <- rbind(t_result, with(wsup_m_cout,{
                 tidy(t.test(P3_ab,P3_bl,paired=TRUE))})) 
 fwrite(t_result,file=paste0(sv_path,"result/ws_dif_pt_test_result.csv"))
 fwrite(wsup_m_cout,file=paste0(sv_path,"result/ws_med_above_below_result.csv"))
+
 ########finish
 fwrite(clim_m_test,paste0(sv_path,"result/monthly_precipitation_watersup.csv"))
 fwrite(summit_clim_avg,paste0(sv_path,"result/Summit_avg_T_rain.csv"))
